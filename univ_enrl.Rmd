@@ -1,0 +1,424 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r, message=FALSE}
+library(readr)
+library(tidyverse)
+library(janitor)
+library(tidymodels)
+library(ggplot2)
+library(skimr)
+library(vip)
+```
+
+```{r}
+enrollment<- read_csv("inq05_samp.csv")%>%
+  clean_names()
+
+head(enrollment)
+```
+
+## EDA 1st
+```{r}
+enrollment%>%
+  skim()
+```
+
+```{r}
+enrollment_prep<- enrollment%>%
+  mutate(enroll = as.factor(enroll))
+  
+#the balance of the response variable
+
+enrollment_prep%>%
+  dplyr::select(enroll)%>%
+  group_by(enroll)%>%
+  summarise(n = n(),
+            pct = round(n()/nrow(enrollment_prep), 2))
+
+enrollment_prep%>%
+  ggplot(aes(x = enroll))+
+  geom_bar()
+
+```
+
+```{r}
+#instate is in categorical variables, dig in
+enrollment_prep%>%
+  distinct(instate)
+
+enrollment_prep<- enrollment_prep%>%
+  mutate(instate = if_else(instate == 'Y', 1 , 0))
+
+enrollment_prep%>%
+  ggplot(aes(as.factor(instate)))+
+  geom_bar()+
+  facet_wrap(~enroll, labeller = "label_both", scales = "free_y")+
+  labs(title = "Enrollment V.S. State Residency",
+       x = "instate")
+
+```
+
+```{r}
+enrollment_prep%>%
+  dplyr::select(ends_with(match = "cntcts"))
+
+enrollment_prep%>%
+  ggplot(aes(self_init_cntcts, fill = enroll))+
+  geom_bar()
+
+enrollment_prep%>%
+  ggplot(aes(travel_init_cntcts,fill = enroll))+
+  geom_bar()
+
+enrollment_prep%>%
+  ggplot(aes(solicited_cntcts,fill = enroll))+
+  geom_bar()
+
+enrollment_prep%>%
+  ggplot(aes(referral_cntcts,fill = enroll))+
+  geom_bar()
+
+enrollment_prep%>%
+  ggplot(aes(total_contacts,fill = enroll))+
+  geom_bar()
+
+
+
+```
+
+```{r}
+enrollment_prep%>%
+  ggplot(aes(recr_code, fill = enroll))+
+  geom_bar()
+
+```
+
+```{r}
+enrollment_prep%>%
+  ggplot(aes(x = enroll, y = avg_income))+
+  geom_boxplot(na.rm = TRUE)
+
+enrollment_prep%>%
+  ggplot(aes(x = enroll, y = distance))+
+  geom_boxplot(na.rm = TRUE)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+## Model Training&Testing
+
+```{r}
+
+enrollment_reduced <- enrollment_prep%>%
+  dplyr::select(-academic_interest_1, -academic_interest_2, -contact_code1, -contact_date1, -ethn_code, -irschool, -level_year,-satscore, -sex, -telecq)
+
+
+enrollment_reduced%>%
+  skim()
+```
+
+```{r}
+
+set.seed(333)
+
+enrollment_model_prep <- initial_split(enrollment_reduced, prop = 0.7)
+
+enrollment_train <- training(enrollment_model_prep)
+enrollment_test <- testing(enrollment_model_prep)
+
+sprintf("PCT of Train Set: %1.2f", nrow(enrollment_train)/nrow(enrollment_reduced))
+sprintf("PCT of Test Set: %1.2f", nrow(enrollment_test)/nrow(enrollment_reduced))
+
+```
+
+```{r}
+enrollment_recipe <- recipe(enroll~., data = enrollment_train)%>%
+  step_rm(init_span)%>% #data leakage, we would not have this info when we make predictions
+  step_medianimpute(all_numeric())%>%
+  step_modeimpute(all_nominal(), -all_outcomes())%>%
+  step_dummy(all_nominal(), -all_outcomes())%>%
+  prep()
+
+```
+```{r}
+baked_train <- bake(enrollment_recipe, new_data = enrollment_train)
+baked_test <- bake(enrollment_recipe, new_data = enrollment_test)
+```
+
+```{r}
+log_reg<- logistic_reg()%>%
+  set_mode("classification")%>%
+  set_engine("glm")%>%
+  fit(enroll~., data = baked_train)
+
+tidy(log_reg)%>%
+  mutate_at(c("estimate", "std.error", "statistic", "p.value"), round, 4)
+
+log_reg%>%
+  vip()
+```
+```{r}
+pred <- predict(log_reg,baked_test)
+
+
+
+pred%>%
+  bind_cols(baked_test)%>%
+  conf_mat(enroll, .pred_class)%>%
+  autoplot(type = "heatmap")
+
+```
+
+## EDA 2nd
+
+```{r}
+#historical school score
+enrollment_prep%>%
+  ggplot(aes(x = enroll, y = hscrat))+
+  geom_boxplot()
+
+#premier v.s. enroll
+enrollment_prep%>%
+  ggplot(aes(as.factor(premiere), fill = enroll))+
+  geom_bar()+
+  labs(x = "premiere")
+
+enrollment_prep%>%
+  ggplot(aes(as.factor(premiere), fill = enroll))+
+  geom_bar(position = "fill")+
+  labs(y = "precentage",
+       x = "premiere")
+
+#campus visits v.s. enroll
+enrollment_prep%>%
+  ggplot(aes(campus_visit))+
+  geom_bar()+
+  facet_wrap(~enroll, labeller = "label_both", scale ="free_y")
+
+#extracurricular interest v.s. enroll
+enrollment_prep%>%
+  ggplot(aes(interest))+
+  geom_bar()+
+  facet_wrap(~enroll, labeller = "label_both", scale ="free_y")
+
+enrollment_prep%>%
+  ggplot(aes(interest, fill = enroll))+
+  geom_bar(position = "fill")+
+  labs(y= "percentage")
+
+enrollment_prep%>%
+  ggplot(aes(interest, fill = enroll))+
+  geom_bar()
+
+#mailq v.s. enroll
+enrollment_prep%>%
+  ggplot(aes(mailq, fill = enroll))+
+  geom_bar()
+
+
+
+```
+## Feature Engineering
+```{r}
+#I do think self_init_cntcts, and recr_code provide some information to the model
+#the outliers in and the scale of avg_income and distance might negetively impact the predicability
+
+enrollment_train2<- enrollment_train%>%
+  mutate(recr_code = if_else(recr_code %in% c("A", "N"), 1, 0),
+         self_init_cntcts = if_else(self_init_cntcts > 3, if_else(self_init_cntcts > 6, 2, 1), 0),
+         total_contacts = if_else(total_contacts > 3, if_else(total_contacts > 6, 2, 1), 0))
+
+enrollment_test2<- enrollment_test%>%
+  mutate(recr_code = if_else(recr_code %in% c("A", "N"), 1, 0),
+         self_init_cntcts = if_else(self_init_cntcts > 3, if_else(self_init_cntcts > 6, 2, 1), 0),
+         total_contacts = if_else(total_contacts > 3, if_else(total_contacts > 6, 2, 1), 0))
+
+enrollment_recipe2 <- recipe(enroll~., data = enrollment_train2)%>%
+  step_rm(init_span)%>% #data leakage, we would not have this info when we make predictions
+  step_medianimpute(all_numeric())%>%
+  prep()
+
+
+baked_train2 <- bake(enrollment_recipe2, new_data = enrollment_train2)
+baked_test2 <- bake(enrollment_recipe2, new_data = enrollment_test2)
+
+baked_train2<- baked_train2%>%
+  mutate(avg_income_log = log(avg_income+1),
+         distance_log = log(distance+1))%>%
+    dplyr::select(-avg_income, -distance)
+
+
+baked_test2<- baked_test2%>%
+  mutate(avg_income_log = log(avg_income+1),
+         distance_log = log(distance+1))%>%
+  dplyr::select(-avg_income, -distance)
+
+```
+
+```{r}
+log_reg2<- logistic_reg()%>%
+  set_mode("classification")%>%
+  set_engine("glm")%>%
+  fit(enroll~., data = baked_train2)
+
+tidy(log_reg2)%>%
+  mutate_at(c("estimate", "std.error", "statistic", "p.value"), round, 4)
+
+```
+
+```{r}
+pred2<- predict(log_reg2, baked_test2, type = "prob")%>%
+  bind_cols(predict(log_reg2, baked_test2))%>%
+  bind_cols(baked_test2)
+
+
+pred2%>%
+  conf_mat(enroll, .pred_class)%>%
+  autoplot(type = "heatmap")
+
+
+pred2%>%
+  roc_curve(enroll, .pred_0)
+
+pred2%>%
+  metrics(enroll, .pred_0, estimate = .pred_class)
+
+```
+```{r}
+library(MASS)
+
+
+steplog <- glm(enroll ~ ., data = baked_train2, family=binomial(link="logit"))
+step <- stepAIC(steplog, direction="both")
+summary(step)
+```
+
+
+```{r}
+steplog2 <- glm(enroll ~ ., data = baked_train, family=binomial(link="logit"))
+step2 <- stepAIC(steplog, direction="both")
+summary(step2)
+
+```
+
+
+```{r}
+
+enrollment_recipe3 <- recipe(enroll~ total_contacts + self_init_cntcts + campus_visit + mailq + 
+    premiere + interest + int1rat + int2rat + hscrat + 
+    instate + stuemail, data = enrollment_train2)%>%
+  step_medianimpute(all_numeric())%>%
+  prep()
+
+
+baked_train3 <- bake(enrollment_recipe3, new_data = enrollment_train2)
+baked_test3 <- bake(enrollment_recipe3, new_data = enrollment_test2)
+
+
+log_reg3<- logistic_reg()%>%
+  set_mode("classification")%>%
+  set_engine("glm")%>%
+  fit(enroll~., data = baked_train3)
+
+tidy(log_reg3)%>%
+  arrange(p.value)%>%
+  mutate_at(c("estimate", "std.error", "statistic", "p.value"), round, 4)
+
+log_reg3%>%
+  vip()
+
+pred3<- predict(log_reg3, baked_test3, type = "prob")%>%
+  bind_cols(predict(log_reg3, baked_test3))%>%
+  bind_cols(baked_test3)
+
+pred3_1 <- predict(log_reg3, baked_train3, type = "prob")%>%
+  bind_cols(predict(log_reg3, baked_train3))%>%
+  bind_cols(baked_train3)
+
+
+
+pred3%>%
+  conf_mat(enroll, .pred_class)%>%
+  autoplot(type = "heatmap")+
+  labs(title = "Testing Confusion Matrix")
+
+pred3_1%>%
+  conf_mat(enroll, .pred_class)%>%
+  autoplot(type = "heatmap")+
+  labs(title = "Training Confusion Matrix")
+
+
+pred3%>%
+  roc_curve(enroll, .pred_0)%>%
+  autoplot()
+
+pred3_1%>%
+  roc_curve(enroll, .pred_0)%>%
+  autoplot()
+
+pred3 %>%
+  mutate(model = "test") %>%
+  bind_rows(pred3_1 %>%
+              mutate(model="train")) %>%
+  group_by(model) %>%
+  roc_curve(enroll, .pred_0) %>%
+  autoplot()
+
+
+pred3%>%
+  metrics(enroll, .pred_0, estimate = .pred_class)
+
+pred3_1%>%
+  metrics(enroll, .pred_0, estimate = .pred_class)%>%
+  mutate(model = "train")%>%
+  bind_rows(pred3%>%
+  metrics(enroll, .pred_0, estimate = .pred_class)%>%
+   mutate(model = "test"))
+
+
+```
+
+
+
+```{r}
+#a basic random forest model
+
+rf<- rand_forest(mode = "classification", min_n = 3, trees = 500)%>%
+  set_engine("ranger", importance = "impurity")%>%
+  fit(enroll~., baked_train3)
+
+pred_rf<- predict(rf, baked_test3, type = "prob")%>%
+  bind_cols(predict(rf, baked_test3),
+            baked_test3)
+
+pred_rf%>%
+  conf_mat(enroll, .pred_class)%>%
+  autoplot(type = "heatmap")
+
+pred_rf%>%
+  roc_curve(enroll, .pred_0)%>%
+  autoplot()
+
+
+pred_rf%>%
+  metrics(enroll, .pred_0, estimate = .pred_class)
+
+
+
+
+
+```
+
