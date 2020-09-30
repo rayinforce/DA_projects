@@ -1,0 +1,378 @@
+---
+title: "O2O_Coupon_Redemption_learning"
+output:
+  html_document:
+    df_print: paged
+---
+import libraries
+```{r, message=FALSE}
+#import libraries
+library(janitor)
+library(tidyverse)
+
+```
+
+
+```{r}
+#read in files
+
+df_ol<- read_csv("ccf_online_stage1_train.csv")%>%
+  clean_names()
+df_ofl<- read_csv("ccf_offline_stage1_train.csv")%>%
+  clean_names()
+
+head(df_ol)
+head(df_ofl)
+```
+## EDA & Data preprocessing
+
+
+```{r}
+#drop rows with null values in coupon id and 
+
+df_ol_clean<-df_ol%>%
+  filter(coupon_id != "null")
+
+df_ofl_clean<-df_ofl%>%
+  filter(coupon_id != "null")%>%
+  mutate(distance = as.numeric(distance))
+
+summary(df_ol_clean)
+summary(df_ofl_clean)
+
+```
+
+```{r, message=FALSE}
+#clean date data
+library(lubridate)
+
+df_ol_clean<- df_ol_clean%>%
+  mutate(date_received = ymd(date_received),
+         date = ymd(date))
+
+df_ofl_clean<- df_ofl_clean%>%
+  mutate(date_received = ymd(date_received),
+         date = ymd(date))
+
+```
+```{r}
+#tag the data with 1 as used coupon in 15 days and 0 as not
+df_ol_clean<- df_ol_clean%>%
+  mutate(used_15days = if_else(is.na(date), 0, if_else(as.numeric(date - date_received) > 15, 0, 1)))
+
+df_ofl_clean<- df_ofl_clean%>%
+  mutate(used_15days = if_else(is.na(date), 0, if_else(as.numeric(date - date_received) > 15, 0, 1)))
+```
+
+```{r}
+#see if is coupon used in general
+
+df_ol_clean%>%
+  ggplot(aes(as.factor(used_15days)))+
+  geom_histogram(stat = "count")+
+  ggtitle("online")
+
+df_ofl_clean%>%
+  ggplot(aes(as.factor(used_15days)))+
+  geom_histogram(stat = "count")+
+  ggtitle("offline")
+
+#see which coupon type is more popular
+df_ol_clean<- df_ol_clean%>%
+  mutate(coupon_type = as.factor(if_else(str_detect(discount_rate,":"), 1, 0)))
+df_ofl_clean<-df_ofl_clean%>%
+  mutate(coupon_type = as.factor(if_else(str_detect(discount_rate,":"), 1, 0)))
+
+df_ol_clean%>%
+  ggplot(aes(as.factor(coupon_type)))+
+  geom_histogram(stat = "count")+
+  ggtitle("offline")
+
+
+df_ofl_clean%>%
+  ggplot(aes(as.factor(coupon_type)))+
+  geom_histogram(stat = "count")+
+  ggtitle("offline")
+
+```
+```{r}
+#There is a huge difference between the amount of the different types of coupons
+#Does coupon type influnce how likely are customers going to use the coupon?
+
+df_ol_clean%>%
+  group_by(coupon_type, used_15days)%>%
+  summarise(n = n())%>%
+  ggplot(aes(x = coupon_type, y = n, fill = as.factor(used_15days)))+
+  geom_col()
+
+df_ofl_clean%>%
+  group_by(coupon_type, used_15days)%>%
+  summarise(n = n())%>%
+  ggplot(aes(x = as.factor(used_15days), y = n))+
+  geom_col()+
+  facet_wrap(~coupon_type, scales = "free_y")
+
+```
+
+```{r}
+#Unify standards for discount rate
+df_ofl_clean<- df_ofl_clean%>%
+  separate(discount_rate, c("char1", "char2"), sep = ":")%>%
+  mutate(char1 = as.numeric(char1),
+         char2 = as.numeric(char2),
+         char1 = if_else(is.na(char2), char1, (char1 - char2)/char1),
+         discount_rate = char1)%>%
+  select(-char1, -char2)
+
+#Forgot the convert used_15days to factor type
+df_ofl_clean<-df_ofl_clean%>%
+  mutate(used_15days = as.factor(used_15days))
+
+df_ol_clean<-df_ol_clean%>%
+  mutate(used_15days = as.factor(used_15days))
+
+
+#take a look at impact of distance
+
+df_ofl_clean%>%
+  ggplot(aes(x = used_15days, y = discount_rate))+
+  geom_boxplot()
+
+
+```
+```{r}
+#add weekday col
+df_ofl_clean<- df_ofl_clean%>%
+  mutate(wd_received = wday(date_received,label = TRUE, locale = "english"))
+
+df_ol_clean<- df_ol_clean%>%
+  mutate(wd_received = wday(date_received,label = TRUE, locale = "english"))
+
+df_ol_clean%>%
+  ggplot(aes(wd_received, fill = used_15days))+
+  geom_bar()
+
+df_ofl_clean%>%
+  ggplot(aes(wd_received, fill = used_15days))+
+  geom_bar(position = "fill")
+#weekdat does not ggive us much information here, I might dicide to drop this in the modeling step
+  
+```
+```{r, message=FALSE}
+#import libs for modeling
+library(tidymodels)
+library(GGally)
+library(skimr)
+```
+
+```{r}
+df_ofl_clean%>%
+  skim_without_charts()
+
+#distance has over 100k missing values, which accounts for 10 percent of the data
+```
+## More Feature Engineering
+
+*Here we can aggregate the data with user_id, and merchat for to generate more feature based on the aggregation*
+*It is not done so here becuase I think the users and merchants are very unique*
+*But we also need to pay attention to the date when aggregating to make sure we do not have data leakage (use future information to predict future)*
+
+
+```{r}
+#first we inspect the time distribution
+df_ofl_clean%>%
+  ggplot(aes(date_received))+
+  geom_bar()
+#from the above skim we can see the coupon received date is between 2016-01-01 to 2016-06-15
+#the redemption date is between 2016-01-01 to 2016-06-30
+#I will partition the data 01-01 to 05-15 / 05-16 to 06-15 by date_received
+#We will also need to take engineer the weekday feature in this step
+
+df_ofl_clean<-df_ofl_clean%>%
+  mutate(tue_or_wed = if_else(wd_received %in% c("Tue", "Wed"), 1, 0))%>%
+  select(-wd_received)
+
+df_ofl_clean<- df_ofl_clean%>%
+  mutate(discount_rate = round(discount_rate, 3))
+
+df_ofl_clean%>%
+  mutate(user_id = as.character(user_id))%>%
+  distinct()%>%
+  count()/nrow(df_ofl_clean)
+
+df_ofl_clean%>%
+  mutate(merchant_id = as.character(merchant_id))%>%
+  distinct()%>%
+  count()/nrow(df_ofl_clean)
+
+
+ofl_train<- df_ofl_clean%>%
+  filter(date_received <= '2016-05-15')
+
+ofl_test<- df_ofl_clean%>%
+  filter(date_received > '2016-05-15')
+
+
+
+
+sprintf("PCT of Training Set: %1.2f", nrow(ofl_train)/nrow(df_ofl_clean))
+sprintf("PCT of Testing Set: %1.2f", nrow(ofl_test)/nrow(df_ofl_clean))
+
+
+```
+
+```{r}
+#impute missing values in distance
+#Later handled in the receipe
+# ofl_train%>%
+#   filter(!is.na(distance))%>%
+#   mutate(distance = as.character(distance))%>%
+#   group_by(distance)%>%
+#   summarise(n = n())
+# 
+# ofl_train<- ofl_train%>%
+#   mutate(distance = as.character(distance))%>%
+#   mutate(distance = if_else(is.na(distance), "0", distance))
+# 
+# ofl_test<- ofl_test%>%
+#   mutate(distance = as.character(distance))%>%
+#   mutate(distance = if_else(is.na(distance), "0", distance))
+
+
+#fit a baseline logistic regression model
+
+
+coupon_recipe<- recipe(used_15days~., data = ofl_train)%>%
+  step_rm(user_id, merchant_id, coupon_id, date, date_received)%>%
+  step_mutate(distance = as.factor(distance))%>%
+  step_modeimpute(distance)%>%
+  prep()
+
+
+```
+
+```{r}
+baked_train<- bake(coupon_recipe, new_data =ofl_train)
+baked_test<- bake(coupon_recipe, new_data = ofl_test)
+
+balanced_baked_train<- caret::downSample(baked_train, baked_train$used_15days)%>%
+  select(-Class)
+
+log_glm<- logistic_reg(mode = "classification")%>%
+  set_engine("glm")%>%
+  fit(used_15days~., data = balanced_baked_train)
+```
+
+
+```{r}
+pred_glm<- log_glm%>%
+  predict(new_data = baked_test)%>%
+  bind_cols(baked_test%>%select(used_15days))
+
+pred_glm%>%
+  conf_mat(used_15days, .pred_class)%>%
+  pluck(1)%>%
+  as_tibble()%>%
+  ggplot(aes(Prediction, Truth, alpha = n))+
+  geom_tile()+
+  geom_text(aes(label = n), colour = "white", alpha = 1 ,size = 8)
+
+#can not predict anything about the minority class
+```
+
+
+```{r}
+#scores with dummy encoded model stored here
+scores_with_categorical<-
+  tibble(
+  "accuracy" = accuracy(pred_glm, used_15days, .pred_class)%>%
+    select(.estimate),
+  "precision" = precision(pred_glm, used_15days, .pred_class) %>%
+    select(.estimate),
+  "recall" = recall(pred_glm, used_15days, .pred_class)%>%
+    select(.estimate)
+  )%>%unnest()
+
+
+```
+
+
+```{r}
+# cross_val_tbl <- vfold_cv(baked_train, v = 11)
+# 
+# 
+# rf_func <- function(split, id, try, tree) {
+#    
+#   analysis_set <- split %>% analysis()
+#   model_rf <-
+#     rand_forest(
+#       mode = "classification",
+#       mtry = try,
+#       trees = tree
+#     ) %>%
+#     set_engine("ranger",
+#       importance = "impurity"
+#     ) %>%
+#     fit(used_15days ~ ., data = analysis_set)
+#   assessment_set <- split %>% assessment()
+#   tibble(
+#     "id" = id,
+#     "truth" = assessment_set$used_15days,
+#     "prediction" = model_rf %>%
+#       predict(new_data = assessment_set) %>%
+#       unlist()
+#   )
+#   
+# }
+# 
+# 
+# pred_rf <- map2_df(
+#   .x = cross_val_tbl$splits,
+#   .y = cross_val_tbl$id,
+#   ~ rf_func(split = .x, id = .y, try = 3, tree = 500)
+# )
+# 
+# 
+# pred_rf %>%
+#   conf_mat(truth, prediction) %>%
+#   summary() %>%
+#   select(-.estimator) %>%
+#   filter(.metric %in%
+#     c("accuracy", "precision", "recall", "f_meas"))
+
+
+ model_rf <-
+    rand_forest(
+      mode = "classification",
+      mtry = 3,
+      trees = 500
+    ) %>%
+    set_engine("ranger",
+      importance = "impurity"
+    ) %>%
+    fit(used_15days ~ ., data = balanced_baked_train)
+ 
+ 
+ 
+ pred_rf<-predict(model_rf, baked_test)%>%
+   bind_cols(baked_test%>%select(used_15days))%>%
+   bind_cols(predict(model_rf, baked_test, type = "prob"))
+ 
+ 
+pred_rf%>%
+  conf_mat(used_15days, .pred_class)%>%
+  pluck(1)%>%
+  as_tibble()%>%
+  ggplot(aes(Prediction, Truth, alpha = n))+
+  geom_tile()+
+  geom_text(aes(label = n), colour = "white", alpha = 1 ,size = 8)
+
+
+pred_rf%>%
+  roc_auc(used_15days, .pred_0)
+
+
+```
+
+
+
