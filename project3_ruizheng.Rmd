@@ -1,0 +1,434 @@
+---
+title: "Project3: Fake Job Postings"
+author: "Rui Zheng"
+output: html_notebook
+---
+
+## Load Packages
+```{r, message=FALSE}
+#load required packages
+library(readr)
+library(tidyverse)
+library(janitor)
+library(ggplot2)
+library(skimr)
+library(textrecipes)
+library(tidymodels)
+library(tidytext)
+library(embed)
+
+```
+
+## Read in data
+```{r}
+#read in data and clean the column names
+df<- read_csv("job_training.csv")%>%
+  clean_names()
+
+head(df)
+```
+
+## EDA & Preprocessing
+```{r}
+df<- df%>%
+  mutate_if(is.numeric, as.factor)
+
+df%>%
+  skim_without_charts()
+
+```
+```{r}
+skims<- df%>%
+  skim_to_list()
+
+skims$character%>%
+  kableExtra::kable()%>%
+  kableExtra::kable_styling(font_size = 12)
+
+skims$factor%>%
+  kableExtra::kable()%>%
+  kableExtra::kable_styling(font_size = 12)
+
+```
+
+```{r}
+df%>%group_by(fraudulent)%>%summarise(n = n())%>%mutate(pct = round(n/nrow(df), 2))
+
+df%>%ggplot(aes(fraudulent))+geom_bar()+labs(title = "class distribution")
+
+```
+
+
+```{r}
+#Process salary data
+
+df%>%
+  distinct(salary_range) #see different types of salary range 
+
+df_clean <- df%>%
+  mutate(salary_range = ifelse(str_detect(salary_range,"[:alpha:]"), NA, salary_range))%>% #clean up invalid salary range (has date)
+  mutate(has_salary_range = if_else(is.na(salary_range), 0, 1))%>% #create indicator variable
+  separate(col = salary_range, into = c("lowerbound_salary","upperbound_salary"), sep = "-")%>% #split range to upper and lower
+  mutate(lowerbound_salary = as.numeric(lowerbound_salary),
+         upperbound_salary = as.numeric(upperbound_salary))%>% #convert to numeric
+  mutate(salary_diff = upperbound_salary - lowerbound_salary,
+         salary_mean = (upperbound_salary + lowerbound_salary)/2) #calculate stats variables
+
+
+df_clean%>%
+  select(contains("salary")) #take a look at the result
+
+
+```
+
+```{r}
+df_clean%>%
+  ggplot(aes(salary_mean, fill = fraudulent))+
+  geom_histogram(bins = 50)+
+  labs(title = "salary mean V.S fraud count")
+
+df_clean%>%
+  ggplot(aes(salary_mean, fill = fraudulent))+
+  geom_histogram(bins = 50, position = "fill")+
+  labs(title = "salary mean V.S fraud percentage")
+```
+
+
+```{r}
+#more likely to be fraudulant without a company logo?
+df%>%
+  ggplot(aes(has_company_logo, fill = fraudulent))+
+  geom_bar()+
+  labs(title = "has_company_logo V.S fraud count")
+df%>%
+  ggplot(aes(has_company_logo, fill = fraudulent))+
+  geom_bar(position = "fill")+
+  labs(title = "has_company_logo V.S fraud percentage")
+
+```
+
+```{r}
+#no question, no trust?
+df%>%
+  ggplot(aes(has_questions, fill = fraudulent))+
+  geom_bar()+
+  labs(title = "has_questions V.S fraud count")
+df%>%
+  ggplot(aes(has_questions, fill = fraudulent))+
+  geom_bar(position = "fill")+
+  labs(title = "has_questions V.S fraud percentage")
+
+```
+
+```{r}
+#get sentiment scores
+afin <- get_sentiments("afinn")
+
+#sentiment table for requirements
+sent_req<- df_clean%>%
+  select(job_id, requirements)%>%
+  unnest_tokens(word, requirements, to_lower = TRUE)%>%
+  filter(!word %in% stop_words)%>%
+  inner_join(afin, by = "word")%>%
+  group_by(job_id)%>%
+  summarise(sentiment_requirement = sum(value))
+
+#sentiment table for description
+sent_desc<- df_clean%>%
+  select(job_id, description)%>%
+  unnest_tokens(word, description, to_lower = TRUE)%>%
+  filter(!word %in% stop_words)%>%
+  inner_join(afin, by = "word")%>%
+  group_by(job_id)%>%
+  summarise(sentiment_description = sum(value))
+
+#join sentiment vars back into the dataframe
+df_clean <- df_clean%>%left_join(sent_req, by = "job_id")%>%left_join(sent_desc, by = "job_id")
+
+df_clean%>%ggplot(aes(sentiment_description, fill= fraudulent))+geom_boxplot()+coord_flip() +labs(title = "sentiment_description V.S fraud distribution")
+
+```
+
+```{r, fig.height=10}
+#seperate the location col so we have more generalization
+
+country_state_df<- df_clean%>%
+  select(location)%>%
+  separate(col = location, into = c("country", "state", "city"), sep = ",")%>% #get 3 levels
+  mutate(country_state = paste0(country,"-",str_trim(state)))%>% #combing cuntry and state
+  select(-state, -city) #keep country and country_state
+
+df_clean%>%bind_cols(country_state_df) -> df_clean #bind it back to the main df
+
+
+
+df_clean%>%ggplot(aes(country, fill = fraudulent))+geom_bar()+coord_flip() + labs(title = "country V.S fraud count")
+df_clean%>%ggplot(aes(country, fill = fraudulent))+geom_bar(position = "fill")+coord_flip() + labs(title = "country V.S fraud percentage")
+
+
+```
+
+
+```{r}
+#explore required education and experiences
+
+#experience
+df_clean%>%ggplot(aes(required_experience, fill = fraudulent))+geom_bar()+coord_flip()
+df_clean%>%ggplot(aes(required_experience, fill = fraudulent))+geom_bar(position = "fill")+coord_flip()
+
+#education
+df_clean%>%ggplot(aes(required_education, fill = fraudulent))+geom_bar()+coord_flip()
+df_clean%>%ggplot(aes(required_education, fill = fraudulent))+geom_bar(position = "fill")+coord_flip()
+
+
+#keep outstanding categories and aggregate others for education var
+df_clean<- df_clean%>%
+  mutate(required_education = if_else(required_education %in% c("Master's Degree", "High School or equivalent", "certification"), required_education, "other"))
+
+```
+
+```{r}
+library(stopwords)
+
+#term frequency encoding on 
+#description_tf<- recipe(fraudulent~., data = df_clean)%>%
+# step_tokenize(description)%>%
+# step_stopwords(description)%>%
+# step_tokenfilter(description, min_times = 10)%>%
+# step_tf(description)
+
+#bake_tf <- bake(description_tf%>%prep(), sample_n(df_clean,100))
+
+
+```
+
+## Create Recipe and Fit Models
+
+
+```{r}
+set.seed(432)
+
+train_test_spit<- initial_split(df_clean, prop = 0.7, strata = fraudulent)
+
+train <- training(train_test_spit)
+test  <- testing(train_test_spit)
+train_cv_folds <- vfold_cv(train, v=3)
+
+sprintf("Train PCT : %1.2f%%", nrow(train)/ nrow(df) * 100)
+sprintf("Test  PCT : %1.2f%%", nrow(test)/ nrow(df) * 100)
+sprintf("Kfold Count: %d", nrow(train_cv_folds))
+```
+
+
+```{r}
+tree_recipe<- recipe(fraudulent~., data = train)%>%
+  step_mutate(has_company_profile = if_else(is.na(company_profile), 0, 1), 
+              has_requirements = if_else(is.na(requirements), 0, 1),
+              has_benefits = if_else(is.na(benefits), 0, 1),
+              has_employment_type = if_else(is.na(employment_type), 0, 1), #create indicator vars
+              has_industry = if_else(is.na(industry), 0, 1))%>%
+  step_mutate(length_description = str_count(description),
+              length_company_profile = str_count(company_profile))%>%  #count description and company profile length
+  step_unknown(employment_type, required_experience)%>%
+  step_woe(industry, outcome = vars(fraudulent) ) %>%
+  step_novel(title, country, country_state)%>%
+  step_other(title,threshold=0.001) %>%
+  step_dummy(title, required_experience, required_education, employment_type)%>%
+  step_tokenize(description) %>%
+  step_stopwords(description) %>%
+  step_tokenfilter(description, max_tokens = 10) %>% #find abnormal words
+  step_tf(description)%>%
+  step_rm(job_id, location, department, company_profile, requirements, benefits, job_function, lowerbound_salary, upperbound_salary,salary_diff, salary_mean)%>%
+  step_modeimpute(all_nominal(), -all_outcomes())%>%
+  step_medianimpute(all_numeric(), -all_outcomes())#remove unused vars 
+
+bake_train <- bake(tree_recipe%>%prep(), new_data = train)
+bake_test <- bake(tree_recipe%>%prep(), new_data = test)
+```
+
+
+```{r}
+#Random Forest
+
+tune_grid <- grid_regular(trees(c(100,300)),
+                          min_n(),
+                          levels = 3)
+
+print(tune_grid)
+
+rf_model <- rand_forest(trees=tune(),
+                        min_n=tune()) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("classification") 
+
+rf_workflow <- workflow() %>%
+  add_recipe(tree_recipe) %>%
+  add_model(rf_model)
+
+
+rf_tuning_results <- rf_workflow %>%
+  tune_grid(
+    resamples = train_cv_folds,
+    grid = tune_grid
+    )
+
+```
+
+```{r}
+rf_tuning_results %>% 
+  collect_metrics() %>%
+  mutate_if(is.numeric, round,3)
+
+rf_tuning_results %>%
+  show_best("roc_auc") %>%
+  print()
+
+rf_best <- rf_tuning_results %>%
+  select_best("roc_auc") 
+
+print(rf_best)
+
+
+rf_final_wf <- 
+  rf_workflow %>% 
+  finalize_workflow(rf_best)
+
+print(rf_final_wf)
+
+rf_final_fit  <- 
+  rf_final_wf %>%
+  fit(data = train) 
+```
+
+
+
+```{r}
+library(vip)
+# model_name <- rf_workflow
+# -- training  
+  predict(rf_final_fit , train, type="prob") %>%
+    bind_cols(predict(rf_final_fit, train, type="class")) %>%
+    bind_cols(.,train)-> scored_train 
+
+  # -- testing 
+  predict(rf_final_fit , test, type="prob") %>%
+    bind_cols(predict(rf_final_fit, test, type="class")) %>%
+    bind_cols(.,test) -> scored_test   
+
+  # -- AUC: Train and Test 
+  scored_train %>% 
+    metrics(fraudulent, .pred_0, estimate = .pred_class) %>%
+    mutate(part="training") %>%
+    bind_rows( scored_test %>% 
+                 metrics(fraudulent, .pred_0, estimate = .pred_class) %>%
+                 mutate(part="testing") ) %>%
+    filter(.metric %in% c('accuracy','roc_auc')) %>%
+    pivot_wider(names_from = .metric, values_from=.estimate)
+  
+  scored_train %>%
+    conf_mat(fraudulent, .pred_class) %>%
+    autoplot(type = "heatmap")+
+    labs(title = "training confusion matrix")
+  
+   scored_test %>%
+    conf_mat(fraudulent, .pred_class) %>%
+    autoplot(type = "heatmap")+
+    labs(title = "testing confusion matrix")
+  
+  # -- ROC Charts 
+  scored_train %>%
+  mutate(model = "train") %>%
+  bind_rows(scored_test %>%
+              mutate(model="test")) %>%
+  group_by(model) %>%
+  roc_curve(fraudulent, .pred_0) %>%
+  autoplot() 
+  
+  scored_test  %>%
+  roc_curve(fraudulent, .pred_0) %>%
+  mutate(fpr = round((1 - specificity),2),
+         tpr = round(sensitivity,3),
+         score_threshold =  1- round(.threshold,3)) %>%
+  group_by(fpr) %>%
+  summarise(score_threshold = max(score_threshold),
+            tpr = max(tpr))%>%
+  ungroup() %>%
+  mutate(precision = tpr/(tpr + fpr)) %>%
+  select(fpr, tpr, precision, score_threshold) %>%
+  filter(fpr <= 0.1)
+
+    # -- variable importance: top 10
+  rf_final_fit %>%
+    pull_workflow_fit() %>%
+    vip(num_features = 10)+
+    labs(title = "Top10 Important Variables")
+```
+
+
+#holdout score
+```{r}
+
+#prep the holdout file
+
+holdout<- read_csv("job_holdout.csv")%>%clean_names()
+
+holdout<- holdout%>%
+  mutate_if(is.numeric, as.factor)%>%
+  mutate(salary_range = ifelse(str_detect(salary_range,"[:alpha:]"), NA, salary_range))%>% #clean up invalid salary range (has date)
+  mutate(has_salary_range = if_else(is.na(salary_range), 0, 1))%>% #create indicator variable
+  separate(col = salary_range, into = c("lowerbound_salary","upperbound_salary"), sep = "-")%>% #split range to upper and lower
+  mutate(lowerbound_salary = as.numeric(lowerbound_salary),
+         upperbound_salary = as.numeric(upperbound_salary))%>% #convert to numeric
+  mutate(salary_diff = upperbound_salary - lowerbound_salary,
+         salary_mean = (upperbound_salary + lowerbound_salary)/2)
+
+
+#sentiment table for requirements
+sent_req<- holdout%>%
+  select(job_id, requirements)%>%
+  unnest_tokens(word, requirements, to_lower = TRUE)%>%
+  filter(!word %in% stop_words)%>%
+  inner_join(afin, by = "word")%>%
+  group_by(job_id)%>%
+  summarise(sentiment_requirement = sum(value))
+
+#sentiment table for description
+sent_desc<- holdout%>%
+  select(job_id, description)%>%
+  unnest_tokens(word, description, to_lower = TRUE)%>%
+  filter(!word %in% stop_words)%>%
+  inner_join(afin, by = "word")%>%
+  group_by(job_id)%>%
+  summarise(sentiment_description = sum(value))
+
+#join sentiment vars back into the dataframe
+holdout <- holdout%>%left_join(sent_req, by = "job_id")%>%left_join(sent_desc, by = "job_id")
+
+country_state_df<- holdout%>%
+  select(location)%>%
+  separate(col = location, into = c("country", "state", "city"), sep = ",")%>% #get 3 levels
+  mutate(country_state = paste0(country,"-",str_trim(state)))%>% #combing cuntry and state
+  select(-state, -city) #keep country and country_state
+
+holdout%>%bind_cols(country_state_df) -> holdout
+
+holdout<- holdout%>%
+  mutate(required_education = if_else(required_education %in% c("Master's Degree", "High School or equivalent", "certification"), required_education, "other"))
+
+```
+
+```{r}
+#score and output
+
+predict(rf_final_fit, holdout) %>%
+  bind_cols(predict(rf_final_fit, holdout, type="prob")) %>%
+  bind_cols(holdout) -> holdout_scored_rf
+
+rz_submission<- holdout_scored_rf%>%
+  select(job_id, fraudulent=.pred_1)
+
+
+write_csv(rz_submission, "rz_submission_project3.csv")
+
+```
+
